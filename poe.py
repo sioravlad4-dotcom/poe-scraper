@@ -1,7 +1,7 @@
 import time
 import requests
 import re
-import os # 👈 Новий імпорт
+import os
 from datetime import datetime, timedelta, time
 from bs4 import BeautifulSoup
 from selenium import webdriver
@@ -14,37 +14,55 @@ from selenium.webdriver.chrome.options import Options
 
 URL = "https://www.poe.pl.ua/disconnection/power-outages/"
 
-# --- ⚠️ Вкажіть, яку чергу шукати ---
+# --- Вкажіть, яку чергу шукати ---
 TARGET_QUEUE = "2 черга"
 TARGET_SUBQUEUE = "1"
 # ---------------------------------
 
-# --- 💡 Читаємо "секрети", які ми додали в GitHub ---
 WP_URL = os.environ.get("WORDPRESS_URL")
 WP_KEY = os.environ.get("WORDPRESS_SECRET_KEY")
-# -----------------------------------------------
 
+# -----------------------------------------------------------------
+# --- 🔴 ОСЬ ЦЯ ФУНКЦІЯ ОНОВЛЕНА 🔴 ---
+# -----------------------------------------------------------------
 def download_page_with_selenium(url):
     """
-    Версія для GitHub Actions (працює в Linux-контейнері).
+    ОНОВЛЕНА ВЕРСІЯ:
+    Додано User-Agent та page_load_timeout, щоб уникнути блокування.
     """
     print(f"🛜  Запускаю браузер (selenium) в режимі headless...")
     
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
-    # 🔴 ОБОВ'ЯЗКОВІ прапори для запуску в контейнері
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     
+    # --- 💡 НОВИЙ РЯДОК: Додаємо User-Agent ---
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
+    
     driver = None
     try:
-        # Використовуємо ChromeDriverManager, він сам завантажить драйвер
         service = ChromeService(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=chrome_options)
         
-        driver.get(url)
+        # --- 💡 НОВИЙ РЯДОК: Встановлюємо тайм-аут завантаження сторінки ---
+        # Даємо сторінці 30 секунд на завантаження,
+        # інакше 'driver.get()' видасть помилку.
+        driver.set_page_load_timeout(30)
         
+        try:
+            driver.get(url)
+        except Exception as page_load_error:
+            # Це нормально, якщо сторінка завантажується занадто довго.
+            # Навіть якщо 'driver.get' впаде з тайм-аутом, 
+            # сторінка могла частково завантажитись, і JS-контент 
+            # все ще може підвантажитись.
+            print(f"...Сторінка завантажувалася довше 30 сек (це очікувано): {page_load_error}")
+            pass # Продовжуємо, незважаючи на помилку
+
+        # Наш головний 'WebDriverWait' все ще чекає на таблицю.
+        # Це найважливіша частина.
         print("...Чекаю, поки JavaScript завантажить таблицю...")
         WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CLASS_NAME, "turnoff-scheduleui-table-queue"))
@@ -59,6 +77,9 @@ def download_page_with_selenium(url):
     finally:
         if driver:
             driver.quit()
+# -----------------------------------------------------------------
+# --- (Решта файлу без змін) ---
+# -----------------------------------------------------------------
 
 def clean_text(text):
     if text is None: return ""
@@ -72,9 +93,6 @@ def add_minutes(t, minutes):
     return dt.time()
 
 def format_schedule_output(states):
-    """
-    ОНОВЛЕННЯ: Тепер ця функція ПОВЕРТАЄ список рядків, а не друкує.
-    """
     lines_to_send = []
     i = 0
     while i < len(states):
@@ -90,11 +108,9 @@ def format_schedule_output(states):
                 k = j
                 while k < len(states) and states[k] == "MAYBE_OFF": k += 1
                 maybe_end_time = add_minutes(time(0, 0), k * 30)
-                # Додаємо рядок до списку
                 lines_to_send.append(f"{format_time(start_time)} - {format_time(end_time)}({format_time(maybe_end_time)})")
                 i = k
             else:
-                # Додаємо рядок до списку
                 lines_to_send.append(f"{format_time(start_time)} - {format_time(end_time)}")
                 i = j
         else:
@@ -103,9 +119,6 @@ def format_schedule_output(states):
 
 
 def parse_and_get_schedule(html, target_q, target_sq):
-    """
-    ОНОВЛЕННЯ: Знаходить останній графік і ПОВЕРТАЄ його у вигляді списку.
-    """
     soup = BeautifulSoup(html, "html.parser")
     rows = soup.find_all("tr")
     current_main_queue = None
@@ -150,13 +163,9 @@ def parse_and_get_schedule(html, target_q, target_sq):
         if len(found_schedules_states) > 1:
             print(f"(Знайдено {len(found_schedules_states)} графіки. Беру останній.)")
         
-        # Беремо ОСТАННІЙ і форматуємо його
         return format_schedule_output(found_schedules_states[-1])
 
 def send_to_wordpress(schedule_lines):
-    """
-    Відправляє дані на ваш WordPress сайт.
-    """
     if not WP_URL or not WP_KEY:
         print("❌ Не можу відправити: 'Секрети' WORDPRESS_URL або WORDPRESS_SECRET_KEY не встановлені.")
         return
@@ -165,8 +174,6 @@ def send_to_wordpress(schedule_lines):
         print("...Графік не знайдено, нічого відправляти.")
         return
 
-    # Перетворюємо список ["01:00 - 04:00", "08:00 - 11:00"]
-    # на один рядок "01:00 - 04:00<br>08:00 - 11:00"
     data_to_send = "<br>".join(schedule_lines)
     
     payload = {
@@ -186,8 +193,5 @@ if __name__ == "__main__":
     html_content = download_page_with_selenium(URL)
     
     if html_content:
-        # 1. Отримуємо список рядків
         schedule_list = parse_and_get_schedule(html_content, TARGET_QUEUE, TARGET_SUBQUEUE)
-        
-        # 2. Відправляємо на WordPress
         send_to_wordpress(schedule_list)
